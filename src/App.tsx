@@ -173,10 +173,12 @@ function CountryTile({
   country,
   mode,
   placed = false,
+  shimmering = false,
 }: {
   country: Country;
   mode: "running" | "ranking";
   placed?: boolean;
+  shimmering?: boolean;
 }) {
   return (
     <div
@@ -184,6 +186,7 @@ function CountryTile({
         "country-tile",
         `country-tile--${mode}`,
         placed ? "is-placed" : "",
+        shimmering ? "is-shimmering" : "",
       ].join(" ")}
     >
       {mode !== "ranking" ? (
@@ -229,12 +232,14 @@ function RankedCountry({
   onRemove,
   scale,
   registerRankingItem,
+  shimmering,
 }: {
   country: Country;
   slotIndex: number;
   onRemove: (slotIndex: number) => void;
   scale: number;
   registerRankingItem: RegisterRankingItem;
+  shimmering: boolean;
 }) {
   const { attributes, listeners, setNodeRef, isDragging, transform } = useDraggable({
     id: `ranking-${slotIndex}-${country.id}`,
@@ -264,7 +269,7 @@ function RankedCountry({
       {...attributes}
       {...listeners}
     >
-      <CountryTile country={country} mode="ranking" />
+      <CountryTile country={country} mode="ranking" shimmering={shimmering} />
       <button
         className="remove-country"
         type="button"
@@ -287,6 +292,7 @@ function RankingSlot({
   onRemove,
   scale,
   registerRankingItem,
+  shimmeringCountryId,
 }: {
   position: number;
   slotIndex: number;
@@ -296,6 +302,7 @@ function RankingSlot({
   onRemove: (slotIndex: number) => void;
   scale: number;
   registerRankingItem: RegisterRankingItem;
+  shimmeringCountryId: string | null;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: `slot-${slotIndex}`,
@@ -318,6 +325,7 @@ function RankingSlot({
             onRemove={onRemove}
             scale={scale}
             registerRankingItem={registerRankingItem}
+            shimmering={shimmeringCountryId === country.id}
           />
         ) : null}
       </div>
@@ -356,12 +364,14 @@ function Scorecard({
   metrics,
   artboardRef,
   registerRankingItem,
+  shimmeringCountryId,
 }: {
   ranking: Ranking;
   onRemove: (slotIndex: number) => void;
   metrics: { scale: number; offsetX: number; offsetY: number };
   artboardRef: React.RefObject<HTMLDivElement | null>;
   registerRankingItem: RegisterRankingItem;
+  shimmeringCountryId: string | null;
 }) {
   return (
     <div className="scorecard-viewport">
@@ -380,7 +390,6 @@ function Scorecard({
         <header className="scorecard-header">
           <h1 className="grand-final">Grand Final</h1>
           <p className="scorecard-label">SCORECARD</p>
-          <p className="broadcast-date">Saturday, 16 May, live at 21:00 CEST</p>
         </header>
 
         <RunningOrder ranking={ranking} scale={metrics.scale} />
@@ -398,6 +407,7 @@ function Scorecard({
               onRemove={onRemove}
               scale={metrics.scale}
               registerRankingItem={registerRankingItem}
+              shimmeringCountryId={shimmeringCountryId}
             />
           ))}
         </section>
@@ -411,7 +421,10 @@ export default function App() {
   const artboardRef = useRef<HTMLDivElement>(null);
   const rankingItemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const previousRankingRects = useRef<Map<string, DOMRect>>(new Map());
+  const shimmerTimerRef = useRef<number | null>(null);
+  const shimmerFrameRef = useRef<number | null>(null);
   const [ranking, setRanking] = useState<Ranking>(() => readStoredRanking());
+  const [shimmeringCountryId, setShimmeringCountryId] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -421,6 +434,17 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(ranking));
   }, [ranking]);
+
+  useEffect(() => {
+    return () => {
+      if (shimmerTimerRef.current !== null) {
+        window.clearTimeout(shimmerTimerRef.current);
+      }
+      if (shimmerFrameRef.current !== null) {
+        window.cancelAnimationFrame(shimmerFrameRef.current);
+      }
+    };
+  }, []);
 
   const registerRankingItem = useCallback<RegisterRankingItem>((countryId, node) => {
     if (node) {
@@ -437,6 +461,25 @@ export default function App() {
       nextRects.set(countryId, node.getBoundingClientRect());
     });
     previousRankingRects.current = nextRects;
+  }, []);
+
+  const triggerPlacementShimmer = useCallback((countryId: string) => {
+    if (shimmerTimerRef.current !== null) {
+      window.clearTimeout(shimmerTimerRef.current);
+    }
+    if (shimmerFrameRef.current !== null) {
+      window.cancelAnimationFrame(shimmerFrameRef.current);
+    }
+
+    setShimmeringCountryId(null);
+    shimmerFrameRef.current = window.requestAnimationFrame(() => {
+      setShimmeringCountryId(countryId);
+      shimmerTimerRef.current = window.setTimeout(() => {
+        setShimmeringCountryId(null);
+        shimmerTimerRef.current = null;
+      }, 1300);
+      shimmerFrameRef.current = null;
+    });
   }, []);
 
   useLayoutEffect(() => {
@@ -519,15 +562,13 @@ export default function App() {
     }
 
     const targetSlot = overData.slotIndex;
+    if (activeData.origin === "ranking" && activeData.slotIndex === targetSlot) {
+      return;
+    }
 
     captureRankingRects();
-    setRanking((current) => {
-      if (activeData.origin === "ranking" && activeData.slotIndex === targetSlot) {
-        return current;
-      }
-
-      return insertCountryAtSlot(current, activeData.countryId, targetSlot);
-    });
+    setRanking((current) => insertCountryAtSlot(current, activeData.countryId, targetSlot));
+    triggerPlacementShimmer(activeData.countryId);
   };
 
   const handleDragCancel = () => {
@@ -562,6 +603,7 @@ export default function App() {
           metrics={metrics}
           artboardRef={artboardRef}
           registerRankingItem={registerRankingItem}
+          shimmeringCountryId={shimmeringCountryId}
         />
       </div>
     </DndContext>
